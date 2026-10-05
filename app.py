@@ -14,7 +14,7 @@ st.set_page_config(
 def get_db():
     return sqlite3.connect("smart_retail.db")
 
-# --- INITIALIZE DATABASE (PAKAI LOGIKA KODE SQLite KAMU) ---
+# --- INITIALIZE DATABASE ---
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
@@ -29,11 +29,11 @@ def init_db():
 
     cursor.execute(""" CREATE TABLE IF NOT EXISTS Transaksi (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            tanggal TEXT, total_bayar INTEGER) """)
+            tanggal TEXT, total_bayar INTEGER, total_keuntungan INTEGER) """)
 
     cursor.execute(""" CREATE TABLE IF NOT EXISTS Detail_Transaksi (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            id_transaksi INTEGER, id_produk INTEGER, jumlah INTEGER, subtotal INTEGER) """)
+            id_transaksi INTEGER, id_produk INTEGER, jumlah INTEGER, subtotal INTEGER, keuntungan INTEGER) """)
 
     # User bawaan
     cursor.execute("SELECT COUNT(*) FROM Users")
@@ -115,7 +115,6 @@ else:
     st.sidebar.write(f"🔑 Role: **{role}**")
     st.sidebar.markdown("---")
 
-    # Hak akses menu berdasarkan role
     if role == "Admin":
         menu = st.sidebar.radio("MENU UTAMA", ["Kelola Produk", "Transaksi Penjualan", "Cari Produk", "Laporan Penjualan", "Logout"])
     else:
@@ -133,10 +132,12 @@ else:
         st.header("📦 Kelola Produk (Admin)")
         
         conn = get_db()
-        df_produk = pd.read_sql_query("SELECT id AS ID, nama_produk AS 'Nama Produk', harga_modal AS 'Harga Modal (Rp)', harga_jual AS 'Harga Jual (Rp)', stok AS 'Stok' FROM Produk", conn)
+        df_produk = pd.read_sql_query("SELECT id AS 'ID Sistem', nama_produk AS 'Nama Produk', harga_modal AS 'Harga Modal (Rp)', harga_jual AS 'Harga Jual (Rp)', stok AS 'Stok' FROM Produk", conn)
         conn.close()
 
-        st.dataframe(df_produk, use_container_width=True)
+        # PENOMORAN OTOMATIS URUT (1, 2, 3...) DITAMPILAN
+        df_produk.insert(0, 'No.', range(1, 1 + len(df_produk)))
+        st.dataframe(df_produk, use_container_width=True, hide_index=True)
 
         col_tambah, col_restock, col_hapus = st.columns(3)
 
@@ -166,7 +167,7 @@ else:
                 conn.close()
                 
                 if list_p:
-                    p_restock = st.selectbox("Pilih Produk", list_p, format_func=lambda x: f"ID {x[0]} - {x[1]}", key="restock")
+                    p_restock = st.selectbox("Pilih Produk", list_p, format_func=lambda x: f"{x[1]} (ID: {x[0]})", key="restock")
                     j_restock = st.number_input("Jumlah Restock", min_value=1, value=1)
                     if st.button("Restock Sekarang"):
                         conn = get_db()
@@ -186,7 +187,7 @@ else:
                 conn.close()
 
                 if list_p_hapus:
-                    p_hapus = st.selectbox("Pilih Produk Dihapus", list_p_hapus, format_func=lambda x: f"ID {x[0]} - {x[1]}", key="hapus")
+                    p_hapus = st.selectbox("Pilih Produk Dihapus", list_p_hapus, format_func=lambda x: f"{x[1]} (ID: {x[0]})", key="hapus")
                     if st.button("Hapus Produk", type="primary"):
                         conn = get_db()
                         cursor = conn.cursor()
@@ -203,7 +204,7 @@ else:
         st.header("🛒 Transaksi Penjualan")
 
         conn = get_db()
-        df_produk = pd.read_sql_query("SELECT id, nama_produk, harga_jual, stok FROM Produk", conn)
+        df_produk = pd.read_sql_query("SELECT id, nama_produk, harga_modal, harga_jual, stok FROM Produk", conn)
         conn.close()
 
         col_kiri, col_kanan = st.columns([1, 1])
@@ -213,25 +214,26 @@ else:
             pilih_id = st.selectbox(
                 "Pilih Barang", 
                 df_produk['id'].tolist(), 
-                format_func=lambda x: f"{df_produk[df_produk['id']==x]['nama_produk'].values[0]} (ID: {x})"
+                format_func=lambda x: f"{df_produk[df_produk['id']==x]['nama_produk'].values[0]}"
             )
             detail = df_produk[df_produk['id'] == pilih_id].iloc[0]
 
-            st.info(f"📌 **Harga:** Rp{detail['harga_jual']:,} | 📦 **Stok Tersedia:** {detail['stok']} pcs")
+            st.info(f"📌 **Harga Jual:** Rp{detail['harga_jual']:,} | 📦 **Stok Tersedia:** {detail['stok']} pcs")
             jumlah_beli = st.number_input("Jumlah Pembelian", min_value=1, value=1)
 
             if st.button("➕ Tambah ke Keranjang", use_container_width=True):
                 stok_di_keranjang = sum(item['jumlah'] for item in st.session_state.keranjang if item['id'] == detail['id'])
                 
-                # Validasi stok
                 if (jumlah_beli + stok_di_keranjang) > detail['stok']:
-                    st.error(f"❌ **ERROR: Stok tidak mencukupi!**\nStok tersedia: {detail['stok']}")
+                    st.error(f"❌ **ERROR: Stok tidak mencukupi!** Sisa stok: {detail['stok']}")
                 else:
+                    keuntungan_per_unit = detail['harga_jual'] - detail['harga_modal']
                     ada = False
                     for item in st.session_state.keranjang:
                         if item['id'] == detail['id']:
                             item['jumlah'] += jumlah_beli
                             item['subtotal'] += detail['harga_jual'] * jumlah_beli
+                            item['total_keuntungan'] += keuntungan_per_unit * jumlah_beli
                             ada = True
                             break
                     if not ada:
@@ -240,7 +242,8 @@ else:
                             "nama": detail['nama_produk'],
                             "harga": detail['harga_jual'],
                             "jumlah": jumlah_beli,
-                            "subtotal": detail['harga_jual'] * jumlah_beli
+                            "subtotal": detail['harga_jual'] * jumlah_beli,
+                            "total_keuntungan": keuntungan_per_unit * jumlah_beli
                         })
                     st.success("Barang ditambahkan ke keranjang!")
                     st.rerun()
@@ -249,9 +252,12 @@ else:
             st.subheader("2. Struk Belanja / Keranjang")
             if st.session_state.keranjang:
                 df_k = pd.DataFrame(st.session_state.keranjang)
-                st.dataframe(df_k[['nama', 'jumlah', 'harga', 'subtotal']], use_container_width=True)
+                df_k.insert(0, 'No.', range(1, 1 + len(df_k)))
+                st.dataframe(df_k[['No.', 'nama', 'jumlah', 'harga', 'subtotal']], use_container_width=True, hide_index=True)
 
                 total = sum(i['subtotal'] for i in st.session_state.keranjang)
+                total_untung = sum(i['total_keuntungan'] for i in st.session_state.keranjang)
+                
                 st.markdown(f"### **TOTAL BELANJA: Rp{total:,}**")
 
                 uang_bayar = st.number_input("Uang Bayar (Rp)", min_value=0, step=1000)
@@ -264,16 +270,18 @@ else:
                         else:
                             kembalian = uang_bayar - total
                             
-                            # Simpan transaksi ke SQLite & kurangi stok
                             conn = get_db()
                             cursor = conn.cursor()
-                            tgl = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                            cursor.execute("INSERT INTO Transaksi (tanggal, total_bayar) VALUES (?, ?)", (tgl, total))
+                            tgl = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            cursor.execute("INSERT INTO Transaksi (tanggal, total_bayar, total_keuntungan) VALUES (?, ?, ?)", 
+                                           (tgl, total, total_untung))
                             tr_id = cursor.lastrowid
 
                             for item in st.session_state.keranjang:
-                                cursor.execute("INSERT INTO Detail_Transaksi (id_transaksi, id_produk, jumlah, subtotal) VALUES (?, ?, ?, ?)",
-                                               (tr_id, item['id'], item['jumlah'], item['subtotal']))
+                                cursor.execute("INSERT INTO Detail_Transaksi (id_transaksi, id_produk, jumlah, subtotal, keuntungan) VALUES (?, ?, ?, ?, ?)",
+                                               (tr_id, item['id'], item['jumlah'], item['subtotal'], item['total_keuntungan']))
+                                
                                 cursor.execute("UPDATE Produk SET stok = stok - ? WHERE id = ?", (item['jumlah'], item['id']))
 
                             conn.commit()
@@ -282,6 +290,7 @@ else:
                             st.balloons()
                             st.success(f"🎉 **TRANSAKSI BERHASIL!**\n\n- No. Transaksi: **#{tr_id}**\n- Kembalian: **Rp{kembalian:,}**")
                             st.session_state.keranjang = []
+                            st.rerun()
                 
                 with col_b2:
                     if st.button("🧹 Kosongkan Keranjang", use_container_width=True):
@@ -295,33 +304,31 @@ else:
     # --------------------------------------------------------------------------
     elif menu in ["Cari Produk", "Lihat Produk"]:
         st.header("🔍 Cari & Lihat Produk")
-        keyword = st.text_input("Ketik Nama Produk atau ID Produk:")
+        keyword = st.text_input("Ketik Nama Produk:")
 
         conn = get_db()
         if keyword:
-            if keyword.isdigit():
-                query = f"SELECT id AS ID, nama_produk AS 'Nama Produk', harga_jual AS 'Harga Jual', stok AS Stok FROM Produk WHERE id = {int(keyword)}"
-            else:
-                query = f"SELECT id AS ID, nama_produk AS 'Nama Produk', harga_jual AS 'Harga Jual', stok AS Stok FROM Produk WHERE nama_produk LIKE '%{keyword}%'"
+            query = f"SELECT id AS 'ID Sistem', nama_produk AS 'Nama Produk', harga_jual AS 'Harga Jual', stok AS Stok FROM Produk WHERE nama_produk LIKE '%{keyword}%'"
         else:
-            query = "SELECT id AS ID, nama_produk AS 'Nama Produk', harga_jual AS 'Harga Jual', stok AS Stok FROM Produk"
+            query = "SELECT id AS 'ID Sistem', nama_produk AS 'Nama Produk', harga_jual AS 'Harga Jual', stok AS Stok FROM Produk"
 
         df_cari = pd.read_sql_query(query, conn)
         conn.close()
 
-        st.dataframe(df_cari, use_container_width=True)
+        df_cari.insert(0, 'No.', range(1, 1 + len(df_cari)))
+        st.dataframe(df_cari, use_container_width=True, hide_index=True)
 
     # --------------------------------------------------------------------------
-    # 📈 LAPORAN PENJUALAN
+    # 📈 LAPORAN PENJUALAN & DETAIL TRANSAKSI
     # --------------------------------------------------------------------------
     elif menu == "Laporan Penjualan":
-        st.header("📊 Laporan Penjualan")
+        st.header("📊 Laporan Penjualan & Keuntungan")
 
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*), COALESCE(SUM(total_bayar), 0) FROM Transaksi")
-        tot_tr, tot_penj = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*), COALESCE(SUM(total_bayar), 0), COALESCE(SUM(total_keuntungan), 0) FROM Transaksi")
+        tot_tr, tot_penj, tot_profit = cursor.fetchone()
 
         cursor.execute(""" 
             SELECT Produk.nama_produk, SUM(Detail_Transaksi.jumlah)
@@ -330,24 +337,43 @@ else:
         """)
         terlaris = cursor.fetchone()
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Transaksi", f"{tot_tr} Transaksi")
-        col2.metric("Total Pendapatan", f"Rp{tot_penj:,}")
-        col3.metric("Produk Terlaris", f"{terlaris[0] if terlaris else '-'}", f"{terlaris[1] if terlaris else 0} pcs")
+        col2.metric("Total Omset", f"Rp{tot_penj:,}")
+        col3.metric("Total Keuntungan (Laba)", f"Rp{tot_profit:,}")
+        col4.metric("Produk Terlaris", f"{terlaris[0] if terlaris else '-'}", f"{terlaris[1] if terlaris else 0} pcs")
+
+        st.markdown("---")
+        st.subheader("📜 Riwayat & Detail Barang Yang Dibeli")
+        
+        df_tr = pd.read_sql_query("SELECT id AS 'ID Transaksi', tanggal AS 'Waktu', total_bayar AS 'Total Bayar (Rp)', total_keuntungan AS 'Keuntungan (Rp)' FROM Transaksi ORDER BY id DESC", conn)
+        if not df_tr.empty:
+            df_tr.insert(0, 'No.', range(1, 1 + len(df_tr)))
+            st.dataframe(df_tr, use_container_width=True, hide_index=True)
+
+            pilih_tr = st.selectbox("Pilih ID Transaksi untuk Lihat Detail Barang yang Dibeli:", df_tr['ID Transaksi'].tolist())
+            
+            query_detail = f"""
+                SELECT Produk.nama_produk AS 'Nama Barang', Detail_Transaksi.jumlah AS 'Jumlah Dibeli', 
+                       Detail_Transaksi.subtotal AS 'Subtotal (Rp)', Detail_Transaksi.keuntungan AS 'Keuntungan (Rp)'
+                FROM Detail_Transaksi 
+                JOIN Produk ON Produk.id = Detail_Transaksi.id_produk
+                WHERE Detail_Transaksi.id_transaksi = {pilih_tr}
+            """
+            df_detail_tr = pd.read_sql_query(query_detail, conn)
+            df_detail_tr.insert(0, 'No.', range(1, 1 + len(df_detail_tr)))
+            st.write(f"**Detail Barang pada Transaksi #{pilih_tr}:**")
+            st.table(df_detail_tr)
 
         st.markdown("---")
         st.subheader("⚠️ Produk Stok Hampir Habis (< 10 pcs)")
-        df_low = pd.read_sql_query("SELECT id AS ID, nama_produk AS 'Nama Produk', stok AS 'Sisa Stok' FROM Produk WHERE stok < 10 ORDER BY stok ASC", conn)
+        df_low = pd.read_sql_query("SELECT nama_produk AS 'Nama Produk', stok AS 'Sisa Stok' FROM Produk WHERE stok < 10 ORDER BY stok ASC", conn)
         
         if not df_low.empty:
+            df_low.insert(0, 'No.', range(1, 1 + len(df_low)))
             st.warning("Produk ini perlu segera di-restock!")
-            st.dataframe(df_low, use_container_width=True)
+            st.dataframe(df_low, use_container_width=True, hide_index=True)
         else:
             st.success("Semua stok produk saat ini masih aman (>= 10 pcs).")
-
-        st.markdown("---")
-        st.subheader("📜 Riwayat Transaksi")
-        df_tr = pd.read_sql_query("SELECT id AS 'ID Transaksi', tanggal AS 'Tanggal & Waktu', total_bayar AS 'Total Bayar (Rp)' FROM Transaksi ORDER BY id DESC", conn)
-        st.dataframe(df_tr, use_container_width=True)
 
         conn.close()
